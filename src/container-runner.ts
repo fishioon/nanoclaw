@@ -15,7 +15,6 @@ import {
   GROUPS_DIR,
   IDLE_TIMEOUT,
   TIMEZONE,
-  WECOM_API_URL,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -55,26 +54,6 @@ interface VolumeMount {
   hostPath: string;
   containerPath: string;
   readonly: boolean;
-}
-
-function toContainerReachableWeComApiUrl(rawUrl: string): string | null {
-  const trimmed = rawUrl.trim();
-  if (!trimmed) return null;
-
-  try {
-    const url = new URL(trimmed);
-    if (
-      url.hostname === 'localhost' ||
-      url.hostname === '127.0.0.1' ||
-      url.hostname === '::1'
-    ) {
-      url.hostname = CONTAINER_HOST_GATEWAY;
-    }
-    return url.toString().replace(/\/$/, '');
-  } catch (err) {
-    logger.warn({ err, rawUrl }, 'Invalid WECOM_API_URL, skipping container injection');
-    return null;
-  }
 }
 
 function buildVolumeMounts(
@@ -257,11 +236,6 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
-  }
-
-  const wecomApiUrl = toContainerReachableWeComApiUrl(WECOM_API_URL);
-  if (wecomApiUrl) {
-    args.push('-e', `NANOCLAW_WECOM_API_BASE_URL=${wecomApiUrl}`);
   }
 
   // Runtime-specific args for host gateway resolution
