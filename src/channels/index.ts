@@ -7,6 +7,8 @@
 
 // slack
 
+import './wecom.js';
+
 // telegram
 
 // whatsapp
