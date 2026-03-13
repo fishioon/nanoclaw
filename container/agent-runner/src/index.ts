@@ -5,7 +5,10 @@
  * Input protocol:
  *   Stdin: Full ContainerInput JSON (read until EOF, like before)
  *   IPC:   Follow-up messages written as JSON files to /workspace/ipc/input/
- *          Files: {type:"message", text:"..."}.json — polled and consumed
+ *          Files:
+ *            {type:"message", text:"..."}.json
+ *            {type:"multimodal", content:[{type:"text", text:"..."}, {type:"image_path", path:"attachments/x.jpg", mediaType:"image/jpeg"}]}.json
+ *          are polled and consumed
  *          Sentinel: /workspace/ipc/input/_close — signals session end
  *
  * Stdout protocol:
@@ -18,6 +21,14 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+
+import {
+  ContentBlock,
+  describeIpcInput,
+  IpcInput,
+  IpcMultimodalContentBlock,
+  loadMultimodalContent,
+} from './ipc-input.js';
 
 interface ContainerInput {
   prompt: string;
@@ -49,7 +60,7 @@ interface SessionsIndex {
 
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string };
+  message: { role: 'user'; content: string | ContentBlock[] };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -57,6 +68,7 @@ interface SDKUserMessage {
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+const GROUP_WORKSPACE_DIR = '/workspace/group';
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -75,6 +87,32 @@ class MessageStream {
       session_id: '',
     });
     this.waiting?.();
+  }
+
+  pushMultimodal(content: ContentBlock[]): void {
+    this.queue.push({
+      type: 'user',
+      message: { role: 'user', content },
+      parent_tool_use_id: null,
+      session_id: '',
+    });
+    this.waiting?.();
+  }
+
+  pushInput(input: IpcInput): void {
+    if (input.type === 'message') {
+      this.push(input.text);
+      return;
+    }
+
+    const content = loadMultimodalContent(
+      input.content,
+      GROUP_WORKSPACE_DIR,
+      log,
+    );
+    if (content.length > 0) {
+      this.pushMultimodal(content);
+    }
   }
 
   end(): void {
@@ -273,28 +311,37 @@ function shouldClose(): boolean {
  * Drain all pending IPC input messages.
  * Returns messages found, or empty array.
  */
-function drainIpcInput(): string[] {
+function drainIpcInput(): IpcInput[] {
   try {
     fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
     const files = fs.readdirSync(IPC_INPUT_DIR)
       .filter(f => f.endsWith('.json'))
       .sort();
 
-    const messages: string[] = [];
+    const inputs: IpcInput[] = [];
     for (const file of files) {
       const filePath = path.join(IPC_INPUT_DIR, file);
       try {
-        const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Partial<IpcInput>;
         fs.unlinkSync(filePath);
         if (data.type === 'message' && data.text) {
-          messages.push(data.text);
+          inputs.push({ type: 'message', text: data.text });
+        } else if (
+          data.type === 'multimodal' &&
+          Array.isArray(data.content) &&
+          data.content.length > 0
+        ) {
+          inputs.push({
+            type: 'multimodal',
+            content: data.content as IpcMultimodalContentBlock[],
+          });
         }
       } catch (err) {
         log(`Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`);
         try { fs.unlinkSync(filePath); } catch { /* ignore */ }
       }
     }
-    return messages;
+    return inputs;
   } catch (err) {
     log(`IPC drain error: ${err instanceof Error ? err.message : String(err)}`);
     return [];
@@ -305,16 +352,16 @@ function drainIpcInput(): string[] {
  * Wait for a new IPC message or _close sentinel.
  * Returns the messages as a single string, or null if _close.
  */
-function waitForIpcMessage(): Promise<string | null> {
+function waitForIpcMessage(): Promise<IpcInput[] | null> {
   return new Promise((resolve) => {
     const poll = () => {
       if (shouldClose()) {
         resolve(null);
         return;
       }
-      const messages = drainIpcInput();
-      if (messages.length > 0) {
-        resolve(messages.join('\n'));
+      const inputs = drainIpcInput();
+      if (inputs.length > 0) {
+        resolve(inputs);
         return;
       }
       setTimeout(poll, IPC_POLL_MS);
@@ -330,7 +377,7 @@ function waitForIpcMessage(): Promise<string | null> {
  * Also pipes IPC messages into the stream during the query.
  */
 async function runQuery(
-  prompt: string,
+  inputs: IpcInput[],
   sessionId: string | undefined,
   mcpServerPath: string,
   containerInput: ContainerInput,
@@ -338,7 +385,9 @@ async function runQuery(
   resumeAt?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
-  stream.push(prompt);
+  for (const input of inputs) {
+    stream.pushInput(input);
+  }
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
@@ -352,10 +401,10 @@ async function runQuery(
       ipcPolling = false;
       return;
     }
-    const messages = drainIpcInput();
-    for (const text of messages) {
-      log(`Piping IPC message into active query (${text.length} chars)`);
-      stream.push(text);
+    const inputs = drainIpcInput();
+    for (const input of inputs) {
+      log(`Piping IPC input into active query (${describeIpcInput(input)})`);
+      stream.pushInput(input);
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
@@ -495,14 +544,15 @@ async function main(): Promise<void> {
   try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
 
   // Build initial prompt (drain any pending IPC messages too)
-  let prompt = containerInput.prompt;
+  let initialPrompt = containerInput.prompt;
   if (containerInput.isScheduledTask) {
-    prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
+    initialPrompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${initialPrompt}`;
   }
+  let inputs: IpcInput[] = [{ type: 'message', text: initialPrompt }];
   const pending = drainIpcInput();
   if (pending.length > 0) {
-    log(`Draining ${pending.length} pending IPC messages into initial prompt`);
-    prompt += '\n' + pending.join('\n');
+    log(`Draining ${pending.length} pending IPC inputs into initial query`);
+    inputs = inputs.concat(pending);
   }
 
   // Query loop: run query → wait for IPC message → run new query → repeat
@@ -511,7 +561,7 @@ async function main(): Promise<void> {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      const queryResult = await runQuery(inputs, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -533,14 +583,14 @@ async function main(): Promise<void> {
       log('Query ended, waiting for next IPC message...');
 
       // Wait for the next message or _close sentinel
-      const nextMessage = await waitForIpcMessage();
-      if (nextMessage === null) {
+      const nextInputs = await waitForIpcMessage();
+      if (nextInputs === null) {
         log('Close sentinel received, exiting');
         break;
       }
 
-      log(`Got new message (${nextMessage.length} chars), starting new query`);
-      prompt = nextMessage;
+      log(`Got ${nextInputs.length} new IPC input(s), starting new query`);
+      inputs = nextInputs;
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
