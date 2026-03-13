@@ -16,6 +16,7 @@ vi.mock('./config.js', () => ({
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
   TIMEZONE: 'America/Los_Angeles',
+  WECOM_API_URL: 'http://127.0.0.1:8787/',
 }));
 
 // Mock logger
@@ -88,6 +89,7 @@ vi.mock('child_process', async () => {
 
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
+import { spawn } from 'child_process';
 
 const testGroup: RegisteredGroup = {
   name: 'Test Group',
@@ -206,5 +208,28 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+
+  it('passes a container-reachable WeCom API base URL to the runtime', async () => {
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      undefined,
+    );
+
+    expect(vi.mocked(spawn)).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining([
+        '-e',
+        'NANOCLAW_WECOM_API_BASE_URL=http://host.docker.internal:8787',
+      ]),
+      expect.objectContaining({ stdio: ['pipe', 'pipe', 'pipe'] }),
+    );
+
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await resultPromise;
   });
 });
