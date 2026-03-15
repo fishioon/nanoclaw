@@ -1,6 +1,6 @@
 ---
 name: wecom-image-vision
-description: When a conversation contains a `[WeCom image] {...}` marker with an `sdkFileId` and the current task clearly depends on seeing the image, download it through the configured WeCom API, save it under the current group, and inject it back into the active Claude session as a multimodal follow-up before answering.
+description: When a conversation contains a `[WeCom image] {...}` marker with an `sdkFileId` and the current task clearly depends on seeing the image, download it through the configured WeCom API, save it under the current group, and inject a multimodal follow-up into the active agent session before answering.
 allowed-tools: Bash(node:*)
 ---
 
@@ -36,8 +36,8 @@ Optional flags:
 --note "Focus on the product label and summarize it for the current request."
 ```
 
-3. The script downloads the image from `NANOCLAW_WECOM_API_BASE_URL`, saves it into `attachments/`, and writes a multimodal follow-up file into `/workspace/ipc/input/`.
-4. Do not guess image contents before the follow-up arrives. Continue only after the image has been injected into the current session.
+3. The script sends a `POST /api/messages/download` request with a JSON body to `NANOCLAW_WECOM_API_BASE_URL`, saves the returned image into `incoming-media/`, and writes a `multimodal` IPC payload into `/workspace/ipc/input/`.
+4. Wait for that multimodal follow-up to be injected into the active session, then inspect the image before answering when the current task requires visual understanding.
 5. If multiple WeCom image markers exist, fetch only the image or images relevant to the current request.
 
 ## Good triggers
