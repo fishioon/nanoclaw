@@ -72,7 +72,10 @@ function toContainerReachableWeComApiUrl(rawUrl: string): string | null {
     }
     return url.toString().replace(/\/$/, '');
   } catch (err) {
-    logger.warn({ err, rawUrl }, 'Invalid WECOM_API_URL, skipping container injection');
+    logger.warn(
+      { err, rawUrl },
+      'Invalid WECOM_API_URL, skipping container injection',
+    );
     return null;
   }
 }

@@ -268,13 +268,7 @@ export class WeComChannel implements Channel {
       content = `@${ASSISTANT_NAME} ${content}`;
     }
 
-    this.opts.onChatMetadata(
-      chatJid,
-      timestamp,
-      displayName,
-      'wecom',
-      isGroup,
-    );
+    this.opts.onChatMetadata(chatJid, timestamp, displayName, 'wecom', isGroup);
 
     const inbound: NewMessage = {
       id: msg.msgid || item.msgid || `wecom-${item.seq}`,

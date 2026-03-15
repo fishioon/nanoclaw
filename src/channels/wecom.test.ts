@@ -23,12 +23,18 @@ describe('WeComChannel', () => {
       groups[jid] = group;
     });
 
-    const channel = new WeComChannel('https://example.com', '', 1000, new Set(), {
-      onMessage,
-      onChatMetadata,
-      registeredGroups: () => groups,
-      registerGroup,
-    });
+    const channel = new WeComChannel(
+      'https://example.com',
+      '',
+      1000,
+      new Set(),
+      {
+        onMessage,
+        onChatMetadata,
+        registeredGroups: () => groups,
+        registerGroup,
+      },
+    );
 
     (channel as any).processItem({
       seq: 1,
@@ -70,11 +76,17 @@ describe('WeComChannel', () => {
 
   it('formats image messages with a stable sdkFileId marker', () => {
     const onMessage = vi.fn();
-    const channel = new WeComChannel('https://example.com', '', 1000, new Set(), {
-      onMessage,
-      onChatMetadata: vi.fn(),
-      registeredGroups: () => ({}),
-    });
+    const channel = new WeComChannel(
+      'https://example.com',
+      '',
+      1000,
+      new Set(),
+      {
+        onMessage,
+        onChatMetadata: vi.fn(),
+        registeredGroups: () => ({}),
+      },
+    );
 
     (channel as any).processItem({
       seq: 2,
@@ -105,11 +117,17 @@ describe('WeComChannel', () => {
       ok: true,
     } as Response);
 
-    const channel = new WeComChannel('https://example.com/', 'secret', 1000, new Set(), {
-      onMessage: vi.fn(),
-      onChatMetadata: vi.fn(),
-      registeredGroups: () => ({}),
-    });
+    const channel = new WeComChannel(
+      'https://example.com/',
+      'secret',
+      1000,
+      new Set(),
+      {
+        onMessage: vi.fn(),
+        onChatMetadata: vi.fn(),
+        registeredGroups: () => ({}),
+      },
+    );
 
     await channel.sendMessage('wc:room-1', '  hello world  ');
 

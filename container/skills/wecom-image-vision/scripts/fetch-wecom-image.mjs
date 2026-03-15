@@ -5,6 +5,32 @@ import path from 'node:path';
 
 const GROUP_DIR = '/workspace/group';
 const IPC_INPUT_DIR = '/workspace/ipc/input';
+const LOG_DIR = path.join(GROUP_DIR, 'logs');
+const LOG_FILE = path.join(LOG_DIR, 'wecom-image-vision.log');
+const MAX_DOWNLOAD_ATTEMPTS = 4;
+const RETRY_DELAY_MS = 1500;
+
+function appendLogLine(line) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // Best-effort only. stderr remains the primary fallback.
+  }
+}
+
+function log(message, extra) {
+  const line =
+    extra === undefined
+      ? `[wecom-image-vision] ${message}`
+      : `[wecom-image-vision] ${message}: ${extra}`;
+  appendLogLine(line);
+  if (extra === undefined) {
+    console.error(line);
+    return;
+  }
+  console.error(line);
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -19,8 +45,24 @@ function parseArgs(argv) {
 }
 
 function fail(message) {
+  appendLogLine(`[wecom-image-vision] FAIL: ${message}`);
   console.error(message);
   process.exit(1);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function redactSdkFileId(value) {
+  if (!value) return '(empty)';
+  if (value.length <= 16) return value;
+  return `${value.slice(0, 8)}...${value.slice(-8)} (len=${value.length})`;
+}
+
+function previewText(value, limit = 200) {
+  if (!value) return '';
+  return value.length > limit ? `${value.slice(0, limit)}...` : value;
 }
 
 function sniffImageType(buffer) {
@@ -61,15 +103,18 @@ function sanitizeFilename(name) {
   return base.replace(/[^A-Za-z0-9._-]+/g, '-');
 }
 
-function buildInstructionText(caption, note, relativePath) {
-  const parts = [
-    'A WeCom image referenced earlier in this conversation has been downloaded and is attached below.',
-    `Local path: ${relativePath}`,
-    'Use this image to answer the current user request.',
-  ];
+function buildContextMessage(caption, note) {
+  const parts = [];
   if (caption) parts.push(`Original caption: ${caption}`);
   if (note) parts.push(`Operator note: ${note}`);
+  if (parts.length === 0) return null;
   return parts.join('\n');
+}
+
+function shouldRetryDownload(status, body) {
+  if (status >= 500) return true;
+  if (!body) return false;
+  return body.includes('wecom sdk error');
 }
 
 async function main() {
@@ -82,49 +127,113 @@ async function main() {
 
   const requestedName = sanitizeFilename(args.filename || `wecom-${sdkFileId}.jpg`);
   const downloadUrl = new URL('/api/messages/download', `${baseUrl}/`);
-  downloadUrl.searchParams.set('sdkFileId', sdkFileId);
-  downloadUrl.searchParams.set('filename', requestedName);
+  const downloadPayload = {
+    sdkFileId,
+    filename: requestedName,
+  };
 
-  const response = await fetch(downloadUrl, {
-    method: 'GET',
-    headers: {
-      Accept: 'image/*,application/octet-stream;q=0.8',
-    },
-  });
+  log('Download request prepared', JSON.stringify({
+    baseUrl,
+    pathname: downloadUrl.pathname,
+    sdkFileId: redactSdkFileId(sdkFileId),
+    filename: requestedName,
+    method: 'POST',
+  }));
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    fail(`Failed to download WeCom image (${response.status}): ${body || response.statusText}`);
+  let buffer = null;
+  let lastErrorMessage = '';
+
+  for (let attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt += 1) {
+    let response;
+    try {
+      response = await fetch(downloadUrl, {
+        method: 'POST',
+        headers: {
+          Accept: 'image/*,application/octet-stream;q=0.8',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(downloadPayload),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      lastErrorMessage = message;
+      log(
+        'Download request failed',
+        JSON.stringify({ attempt, maxAttempts: MAX_DOWNLOAD_ATTEMPTS, message }),
+      );
+      if (attempt < MAX_DOWNLOAD_ATTEMPTS) {
+        await sleep(RETRY_DELAY_MS * attempt);
+        continue;
+      }
+      fail(`Failed to download WeCom image: ${message}`);
+    }
+
+    log('Download response received', JSON.stringify({
+      attempt,
+      maxAttempts: MAX_DOWNLOAD_ATTEMPTS,
+      status: response.status,
+      statusText: response.statusText,
+      contentType: response.headers.get('content-type') || '',
+      contentLength: response.headers.get('content-length') || '',
+    }));
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      lastErrorMessage = body || response.statusText;
+      log(
+        'Download failed body preview',
+        JSON.stringify({
+          attempt,
+          maxAttempts: MAX_DOWNLOAD_ATTEMPTS,
+          body: previewText(lastErrorMessage),
+        }),
+      );
+      if (attempt < MAX_DOWNLOAD_ATTEMPTS && shouldRetryDownload(response.status, body)) {
+        await sleep(RETRY_DELAY_MS * attempt);
+        continue;
+      }
+      fail(`Failed to download WeCom image (${response.status}): ${lastErrorMessage}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    buffer = Buffer.from(arrayBuffer);
+    break;
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
+  if (!buffer) fail(`Failed to download WeCom image: ${lastErrorMessage || 'unknown error'}`);
   if (buffer.length === 0) fail('Downloaded WeCom image is empty');
 
   const detected = sniffImageType(buffer);
   if (!detected) fail('Downloaded WeCom attachment is not a supported image type');
 
-  const attachmentsDir = path.join(GROUP_DIR, 'attachments');
-  fs.mkdirSync(attachmentsDir, { recursive: true });
+  const mediaDir = path.join(GROUP_DIR, 'incoming-media');
+  fs.mkdirSync(mediaDir, { recursive: true });
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   const timestamp = Date.now();
-  const fileBase = sanitizeFilename(path.parse(requestedName).name || `wecom-${sdkFileId}`);
-  const filename = `${fileBase}-${timestamp}${detected.extension}`;
-  const fullPath = path.join(attachmentsDir, filename);
+  const fileBase = sanitizeFilename(
+    path.parse(requestedName).name || `wecom-${sdkFileId}`,
+  );
+  const suffix = Math.random().toString(36).slice(2, 8);
+  const filename = `${timestamp}-${suffix}-${fileBase}${detected.extension}`;
+  const fullPath = path.join(mediaDir, filename);
   fs.writeFileSync(fullPath, buffer);
+  log('Image saved locally', JSON.stringify({
+    fullPath,
+    bytes: buffer.length,
+    mediaType: detected.mediaType,
+  }));
 
-  const relativePath = path.posix.join('attachments', filename);
+  const relativePath = path.posix.join('incoming-media', filename);
   const note = (args.note || '').trim();
   const caption = (args.caption || '').trim();
 
-  const payload = {
+  const ipcBaseName = `${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
+  const contextMessage = buildContextMessage(caption, note);
+  const multimodalPayload = {
     type: 'multimodal',
     content: [
-      {
-        type: 'text',
-        text: buildInstructionText(caption, note, relativePath),
-      },
+      ...(contextMessage ? [{ type: 'text', text: contextMessage }] : []),
       {
         type: 'image_path',
         path: relativePath,
@@ -132,12 +241,9 @@ async function main() {
       },
     ],
   };
-
-  const ipcFile = path.join(
-    IPC_INPUT_DIR,
-    `${timestamp}-${Math.random().toString(36).slice(2, 8)}.json`,
-  );
-  fs.writeFileSync(ipcFile, JSON.stringify(payload, null, 2));
+  const imageIpcFile = path.join(IPC_INPUT_DIR, `${ipcBaseName}.00-image.json`);
+  fs.writeFileSync(imageIpcFile, JSON.stringify(multimodalPayload, null, 2));
+  log('Multimodal IPC message written', imageIpcFile);
 
   process.stdout.write(
     JSON.stringify(
@@ -146,7 +252,7 @@ async function main() {
         relativePath,
         mediaType: detected.mediaType,
         bytes: buffer.length,
-        ipcFile,
+        imageIpcFile,
       },
       null,
       2,
@@ -155,5 +261,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  fail(err instanceof Error ? err.message : String(err));
+  const message = err instanceof Error ? err.message : String(err);
+  appendLogLine(`[wecom-image-vision] UNCAUGHT: ${message}`);
+  fail(message);
 });
