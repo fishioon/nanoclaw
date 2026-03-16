@@ -9,16 +9,25 @@ import { readEnvFile } from './env.js';
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
+  'TRIGGER_ALIASES',
   'WECOM_API_URL',
 ]);
 
 export const ASSISTANT_NAME =
-  process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
+  process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || '虾虾';
 export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER ||
     envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
 export const WECOM_API_URL =
   process.env.WECOM_API_URL || envConfig.WECOM_API_URL || '';
+export const TRIGGER_ALIASES = (
+  process.env.TRIGGER_ALIASES ||
+  envConfig.TRIGGER_ALIASES ||
+  ''
+)
+  .split(',')
+  .map((value) => value.trim())
+  .filter((value, index, arr) => value && arr.indexOf(value) === index);
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
@@ -68,10 +77,22 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export const TRIGGER_PATTERN = new RegExp(
-  `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
-  'i',
+function buildTriggerRegex(names: string[], anchored: boolean): RegExp {
+  const alternation = names.map((name) => escapeRegex(name)).join('|');
+  const prefix = anchored ? '^' : '';
+  return new RegExp(
+    `${prefix}@(?:${alternation})(?=$|\\s|[\\p{P}\\p{S}])`,
+    'iu',
+  );
+}
+
+export const TRIGGER_NAMES = [ASSISTANT_NAME, ...TRIGGER_ALIASES].filter(
+  (value, index, arr) => value && arr.indexOf(value) === index,
 );
+
+export const TRIGGER_PATTERN = buildTriggerRegex(TRIGGER_NAMES, true);
+
+export const TRIGGER_MENTION_PATTERN = buildTriggerRegex(TRIGGER_NAMES, false);
 
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default

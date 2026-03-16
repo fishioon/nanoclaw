@@ -1,4 +1,9 @@
-import { ASSISTANT_NAME, POLL_INTERVAL, TRIGGER_PATTERN } from '../config.js';
+import {
+  ASSISTANT_NAME,
+  POLL_INTERVAL,
+  TRIGGER_MENTION_PATTERN,
+  TRIGGER_PATTERN,
+} from '../config.js';
 import { getRouterState, setRouterState } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
@@ -262,7 +267,7 @@ export class WeComChannel implements Channel {
     if (!content) return;
     if (
       msg.msgtype === 'text' &&
-      content.includes(`@${ASSISTANT_NAME}`) &&
+      TRIGGER_MENTION_PATTERN.test(content) &&
       !TRIGGER_PATTERN.test(content.trim())
     ) {
       content = `@${ASSISTANT_NAME} ${content}`;

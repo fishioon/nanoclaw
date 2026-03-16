@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from './config.js';
+import {
+  ASSISTANT_NAME,
+  TRIGGER_ALIASES,
+  TRIGGER_MENTION_PATTERN,
+  TRIGGER_PATTERN,
+} from './config.js';
 import {
   escapeXml,
   formatMessages,
@@ -134,6 +139,10 @@ describe('TRIGGER_PATTERN', () => {
     expect(TRIGGER_PATTERN.test(`@${name} hello`)).toBe(true);
   });
 
+  it('matches repeated Chinese mention followed by whitespace', () => {
+    expect(TRIGGER_PATTERN.test(`@${name} @${name} 你被玩坏了`)).toBe(true);
+  });
+
   it('matches case-insensitively', () => {
     expect(TRIGGER_PATTERN.test(`@${lower} hello`)).toBe(true);
     expect(TRIGGER_PATTERN.test(`@${upper} hello`)).toBe(true);
@@ -147,6 +156,10 @@ describe('TRIGGER_PATTERN', () => {
     expect(TRIGGER_PATTERN.test(`@${name}extra hello`)).toBe(false);
   });
 
+  it('does not match when Chinese text continues without a separator', () => {
+    expect(TRIGGER_PATTERN.test(`@${name}你好`)).toBe(false);
+  });
+
   it('matches with word boundary before apostrophe', () => {
     expect(TRIGGER_PATTERN.test(`@${name}'s thing`)).toBe(true);
   });
@@ -158,6 +171,19 @@ describe('TRIGGER_PATTERN', () => {
   it('matches with leading whitespace after trim', () => {
     // The actual usage trims before testing: TRIGGER_PATTERN.test(m.content.trim())
     expect(TRIGGER_PATTERN.test(`@${name} hey`.trim())).toBe(true);
+  });
+
+  it('matches configured trigger aliases at start of message', () => {
+    for (const alias of TRIGGER_ALIASES) {
+      expect(TRIGGER_PATTERN.test(`@${alias} hello`)).toBe(true);
+    }
+  });
+
+  it('finds trigger mentions anywhere in the message for WeCom prefixing', () => {
+    expect(TRIGGER_MENTION_PATTERN.test(`hello @${name}`)).toBe(true);
+    for (const alias of TRIGGER_ALIASES) {
+      expect(TRIGGER_MENTION_PATTERN.test(`hello @${alias}`)).toBe(true);
+    }
   });
 });
 

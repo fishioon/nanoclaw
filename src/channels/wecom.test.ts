@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ASSISTANT_NAME } from '../config.js';
+import { ASSISTANT_NAME, TRIGGER_ALIASES } from '../config.js';
 import { RegisteredGroup } from '../types.js';
 import { WeComChannel } from './wecom.js';
 
@@ -70,6 +70,44 @@ describe('WeComChannel', () => {
         id: 'msg-1',
         sender: 'alice',
         content: `@${ASSISTANT_NAME} hello @${ASSISTANT_NAME}`,
+      }),
+    );
+  });
+
+  it('canonicalizes alias mentions so they can trigger group processing', () => {
+    const onMessage = vi.fn();
+    const alias = TRIGGER_ALIASES[0];
+    expect(alias).toBeTruthy();
+
+    const channel = new WeComChannel(
+      'https://example.com',
+      '',
+      1000,
+      new Set(),
+      {
+        onMessage,
+        onChatMetadata: vi.fn(),
+        registeredGroups: () => ({}),
+      },
+    );
+
+    (channel as any).processItem({
+      seq: 3,
+      msgid: 'outer-3',
+      chat_msg: {
+        msgid: 'msg-3',
+        msgtime: 1700000000000,
+        from: 'alice',
+        roomid: 'room-1',
+        msgtype: 'text',
+        text: { content: `hello @${alias}` },
+      },
+    });
+
+    expect(onMessage).toHaveBeenCalledWith(
+      'wc:room-1',
+      expect.objectContaining({
+        content: `@${ASSISTANT_NAME} hello @${alias}`,
       }),
     );
   });
