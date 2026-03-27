@@ -8,6 +8,7 @@ import { isValidTimezone } from './timezone.js';
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
+  'TRIGGER_ALIASES',
   'ONECLI_URL',
   'TZ',
 ]);
@@ -17,6 +18,14 @@ export const ASSISTANT_NAME =
 export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER ||
     envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
+export const TRIGGER_ALIASES = (
+  process.env.TRIGGER_ALIASES ||
+  envConfig.TRIGGER_ALIASES ||
+  ''
+)
+  .split(',')
+  .map((value) => value.trim())
+  .filter((value, index, arr) => value && arr.indexOf(value) === index);
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
@@ -64,6 +73,23 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function buildTriggerRegex(names: string[], anchored: boolean): RegExp {
+  const alternation = names.map((name) => escapeRegex(name)).join('|');
+  const prefix = anchored ? '^' : '';
+  return new RegExp(
+    `${prefix}@(?:${alternation})(?=$|\\s|[\\p{P}\\p{S}])`,
+    'iu',
+  );
+}
+
+export const TRIGGER_NAMES = [ASSISTANT_NAME, ...TRIGGER_ALIASES].filter(
+  (value, index, arr) => value && arr.indexOf(value) === index,
+);
+
+export const TRIGGER_PATTERN = buildTriggerRegex(TRIGGER_NAMES, true);
+
+export const TRIGGER_MENTION_PATTERN = buildTriggerRegex(TRIGGER_NAMES, false);
+
 export function buildTriggerPattern(trigger: string): RegExp {
   return new RegExp(`^${escapeRegex(trigger.trim())}\\b`, 'i');
 }
@@ -74,8 +100,6 @@ export function getTriggerPattern(trigger?: string): RegExp {
   const normalizedTrigger = trigger?.trim();
   return buildTriggerPattern(normalizedTrigger || DEFAULT_TRIGGER);
 }
-
-export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
 
 // Timezone for scheduled tasks, message formatting, etc.
 // Validates each candidate is a real IANA identifier before accepting.
